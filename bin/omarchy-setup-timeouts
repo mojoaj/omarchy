@@ -1,0 +1,77 @@
+#!/bin/bash
+# omarchy:summary=Configure hypridle screensaver, lock, and suspend timeouts
+# omarchy:args=[Short|Balanced|Long|Desktop|Custom]
+
+HYPRIDLE_CONF="$HOME/.config/hypr/hypridle.conf"
+
+write_hypridle_conf() {
+  local screensaver=$1
+  local lock=$2
+  local suspend=$3
+
+  cat >"$HYPRIDLE_CONF" <<EOF
+general {
+    lock_cmd = omarchy-system-lock                                # lock screen and 1password
+    before_sleep_cmd = OMARCHY_LOCK_ONLY=true omarchy-system-lock # lock before suspend without scheduling display off
+    after_sleep_cmd = sleep 1 && omarchy-system-wake              # delay for PAM readiness, then turn on display
+    inhibit_sleep = 3                                             # wait until screen is locked
+}
+
+# Start screensaver
+listener {
+    timeout = $screensaver
+    on-timeout = pidof hyprlock || omarchy-launch-screensaver
+}
+
+# Lock system
+listener {
+    timeout = $lock
+    on-timeout = omarchy-system-lock
+    on-resume = omarchy-system-wake
+}
+EOF
+
+  if ((suspend > 0)); then
+    cat >>"$HYPRIDLE_CONF" <<EOF
+
+# Suspend
+listener {
+    timeout = $suspend
+    on-timeout = systemctl suspend
+}
+EOF
+  fi
+}
+
+prompt_seconds() {
+  local label=$1
+  local default=$2
+  local val
+  val=$(gum input --prompt "$label (seconds, 0 to disable): " --value "$default")
+  if ! [[ $val =~ ^[0-9]+$ ]]; then
+    echo "Invalid input, using default: $default" >&2
+    val=$default
+  fi
+  echo "$val"
+}
+
+if [[ -z $1 ]]; then
+  profile=$(gum choose --height 7 --header "Select hypridle profile" Short Balanced Long Desktop Custom)
+else
+  profile=$1
+fi
+
+case "$profile" in
+Short) write_hypridle_conf 60 180 600 ;;
+Balanced) write_hypridle_conf 150 300 1800 ;;
+Long) write_hypridle_conf 300 900 3600 ;;
+Desktop) write_hypridle_conf 150 300 0 ;;
+Custom)
+  screensaver=$(prompt_seconds "Screensaver" 150)
+  lock=$(prompt_seconds "Lock" 300)
+  suspend=$(prompt_seconds "Suspend" 1800)
+  write_hypridle_conf "$screensaver" "$lock" "$suspend"
+  ;;
+esac
+
+omarchy-restart-hypridle
