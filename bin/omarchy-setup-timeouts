@@ -1,8 +1,16 @@
 #!/bin/bash
+
 # omarchy:summary=Configure hypridle screensaver, lock, and suspend timeouts
-# omarchy:args=[Short|Balanced|Long|Desktop|Custom]
+# omarchy:args=[Short|Balanced|Long|Custom]
 
 HYPRIDLE_CONF="$HOME/.config/hypr/hypridle.conf"
+
+# intensity => "screensaver lock suspend"
+declare -A PRESETS=(
+  [Short]="60 180 600"
+  [Balanced]="150 300 1800"
+  [Long]="300 900 3600"
+)
 
 write_hypridle_conf() {
   local screensaver=$1
@@ -11,10 +19,10 @@ write_hypridle_conf() {
 
   cat >"$HYPRIDLE_CONF" <<EOF
 general {
-    lock_cmd = omarchy-system-lock                                # lock screen and 1password
+    lock_cmd = omarchy-system-lock # lock screen and 1password
     before_sleep_cmd = OMARCHY_LOCK_ONLY=true omarchy-system-lock # lock before suspend without scheduling display off
-    after_sleep_cmd = sleep 1 && omarchy-system-wake              # delay for PAM readiness, then turn on display
-    inhibit_sleep = 3                                             # wait until screen is locked
+    after_sleep_cmd = sleep 1 && omarchy-system-wake # delay for PAM readiness, then turn on display
+    inhibit_sleep = 3 # wait until screen is locked
 }
 
 # Start screensaver
@@ -34,7 +42,7 @@ EOF
   if ((suspend > 0)); then
     cat >>"$HYPRIDLE_CONF" <<EOF
 
-# Suspend
+# Suspend listener
 listener {
     timeout = $suspend
     on-timeout = systemctl suspend
@@ -43,35 +51,73 @@ EOF
   fi
 }
 
+# Accept plain seconds or duration shorthand: 90, 90s, 10m, 1h30m
+parse_duration() {
+  local input=${1,,}
+  local total=0
+  local matched=0
+
+  if [[ $input =~ ^[0-9]+$ ]]; then
+    echo $((10#$input))
+    return 0
+  fi
+
+  if [[ -n $input && $input =~ ^([0-9]+h)?([0-9]+m)?([0-9]+s)?$ ]]; then
+    [[ ${BASH_REMATCH[1]} ]] && total=$((total + 10#${BASH_REMATCH[1]%h} * 3600)) && matched=1
+    [[ ${BASH_REMATCH[2]} ]] && total=$((total + 10#${BASH_REMATCH[2]%m} * 60)) && matched=1
+    [[ ${BASH_REMATCH[3]} ]] && total=$((total + 10#${BASH_REMATCH[3]%s})) && matched=1
+    if ((matched)); then
+      echo "$total"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 prompt_seconds() {
   local label=$1
   local default=$2
+  local input
   local val
-  val=$(gum input --prompt "$label (seconds, 0 to disable): " --value "$default")
-  if ! [[ $val =~ ^[0-9]+$ ]]; then
+  input=$(gum input --prompt "$label (seconds, or 10m/1h30m; 0 to disable): " --value "$default")
+  if ! val=$(parse_duration "$input"); then
     echo "Invalid input, using default: $default" >&2
     val=$default
   fi
   echo "$val"
 }
 
-if [[ -z $1 ]]; then
-  profile=$(gum choose --height 7 --header "Select hypridle profile" Short Balanced Long Desktop Custom)
+# Fast path: known intensity passed as arg (suspend on)
+if [[ -n $1 && -n ${PRESETS[$1]} ]]; then
+  read -r screensaver lock suspend <<<"${PRESETS[$1]}"
 else
-  profile=$1
+  suspend_enabled=0
+  gum confirm --default=false "Automatically suspend when idle?" && suspend_enabled=1
+
+  if [[ -z $1 ]]; then
+    intensity=$(gum choose --height 7 --header "Select timeout intensity" Short Balanced Long Custom)
+  else
+    intensity=$1
+  fi
+
+  case "$intensity" in
+  Custom)
+    screensaver=$(prompt_seconds "Screensaver" 150)
+    lock=$(prompt_seconds "Lock" 300)
+    if ((suspend_enabled)); then
+      suspend=$(prompt_seconds "Suspend" 1800)
+    else
+      suspend=0
+    fi
+    ;;
+  *)
+    read -r screensaver lock suspend <<<"${PRESETS[$intensity]}"
+    ((suspend_enabled)) || suspend=0
+    ;;
+  esac
 fi
 
-case "$profile" in
-Short) write_hypridle_conf 60 180 600 ;;
-Balanced) write_hypridle_conf 150 300 1800 ;;
-Long) write_hypridle_conf 300 900 3600 ;;
-Desktop) write_hypridle_conf 150 300 0 ;;
-Custom)
-  screensaver=$(prompt_seconds "Screensaver" 150)
-  lock=$(prompt_seconds "Lock" 300)
-  suspend=$(prompt_seconds "Suspend" 1800)
-  write_hypridle_conf "$screensaver" "$lock" "$suspend"
-  ;;
-esac
+write_hypridle_conf "$screensaver" "$lock" "$suspend"
 
 omarchy-restart-hypridle
